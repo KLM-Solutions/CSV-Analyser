@@ -176,8 +176,6 @@ if uploaded_file is not None:
                     st.subheader("Anomalies Detected:")
                     for anomaly in anomalies:
                         st.write(f"- {anomaly}")
-                else:
-                    st.write("No anomalies detected.")
 
                 # Chunk the dataframe
                 chunks = chunk_dataframe(df)
