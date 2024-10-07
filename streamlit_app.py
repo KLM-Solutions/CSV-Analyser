@@ -1,198 +1,139 @@
 import streamlit as st
 import pandas as pd
-import json
 from openai import OpenAI
-from datetime import datetime, timedelta
 import os
-import io
-from dotenv import load_dotenv
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+import re
 
-# Load environment variables from .env file
-load_dotenv()
+# Set up OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Function to get OpenAI API key
-def get_openai_api_key():
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        api_key = st.text_input("Enter your OpenAI API key:", type="password")
-        if api_key:
-            # Save the API key to .env file
-            with open(".env", "a") as env_file:
-                env_file.write(f"\nOPENAI_API_KEY={api_key}")
-            st.success("API key saved to .env file.")
-    return api_key
-
-# Initialize OpenAI client
-api_key = get_openai_api_key()
-if api_key:
-    client = OpenAI(api_key=api_key)
-else:
-    client = None
-
-def csv_to_json(csv_file):
-    try:
-        df = pd.read_csv(csv_file)
-        return df.to_json(orient="records")
-    except pd.errors.EmptyDataError:
-        st.error("The uploaded file is empty or contains no parsable data.")
+def load_data(file):
+    if file.name.endswith('.csv'):
+        df = pd.read_csv(file)
+    elif file.name.endswith(('.xls', '.xlsx')):
+        df = pd.read_excel(file)
+    else:
+        st.error("Unsupported file format. Please upload a CSV or Excel file.")
         return None
-    except Exception as e:
-        st.error(f"An error occurred while processing the file: {str(e)}")
-        return None
+    return df
 
-def analyze_anomalies(df):
-    anomalies = []
+def analyze_query(query, df):
+    query_types = {
+        "Forwarding Email": ["User agent", "Request ID", "User type", "Cross tenant access type"],
+        "Suspicious User Password Change": ["Date (UTC)", "Request ID", "Correlation ID", "User ID", "User", "Username", "User type", "Cross tenant access type", "Incoming token type", "Flagged for review", "Token issuer type", "Conditional Access", "Federated Token Id", "Federated Token Issuer"],
+        "User accounts added or Deleted": ["User", "Username", "User type", "User ID", "Request ID", "Correlation ID", "Cross tenant access type", "Token issuer type", "Token issuer name", "Associated Resource Id", "Federated Token Id", "Federated Token Issuer"],
+        "Audit Logs Disabled": ["Flagged for review", "Token issuer type", "Token issuer name", "Conditional Access", "Federated Token Id", "Federated Token Issuer"],
+        "MFA disabled": ["Conditional Access", "Token issuer type"],
+        "Record Type Based alerts": ["Flagged for review", "Token issuer type", "Incoming token type", "Token issuer name", "Conditional Access", "Managed Identity type"],
+        "Device No Longer Compliant": ["User agent", "Cross tenant access type", "Incoming token type", "Incoming token type.1", "Conditional Access", "Managed Identity type", "Associated Resource Id"],
+        "Suspicious Inbox Manipulation Rule": ["Flagged for review", "Conditional Access", "Cross tenant access type", "Incoming token type", "Token issuer type", "Latency", "Federated Token Id", "Federated Token Issuer"],
+        "Insight and report events": ["Flagged for review", "Latency", "Conditional Access", "Managed Identity type", "Federated Token Id", "Federated Token Issuer"],
+        "EOP Phishing and Malware events": ["Flagged for review", "User agent", "Correlation ID", "User ID", "Username", "Token issuer type", "Token issuer name", "Federated Token Id", "Federated Token Issuer"],
+        "Member added to Group": ["User ID", "User", "Username", "User type", "Request ID", "Correlation ID", "Incoming token type", "Token issuer type", "Associated Resource Id", "Cross tenant access type"],
+        "Member added to Role": ["User", "Username", "User type", "Cross tenant access type", "Incoming token type", "Token issuer type", "Conditional Access", "Associated Resource Id", "Federated Token Id", "Federated Token Issuer"],
+        "Unusual amount of login failures": ["Request ID", "User ID", "Username", "User type", "Cross tenant access type", "Flagged for review", "Conditional Access", "Token issuer type", "Token issuer name", "Latency"],
+        "Possible Brute Force Lockout Evasion": ["Request ID", "User agent", "User ID", "Username", "User type", "Cross tenant access type", "Incoming token type", "Flagged for review", "Token issuer type", "Conditional Access", "Managed Identity type", "Associated Resource Id", "Federated Token Id", "Federated Token Issuer"],
+        "Impossible Travel Alerts": ["Date (UTC)", "User agent", "Correlation ID", "User ID", "User", "Username", "User type", "Cross tenant access type", "Incoming token type", "Conditional Access", "Latency", "Associated Resource Id", "Token issuer type", "Token issuer name", "Federated Token Id", "Federated Token Issuer"],
+        "Sign ins with Blacklisted IPs": ["User agent", "User ID", "User", "Username", "User type", "Cross tenant access type", "Incoming token type", "Conditional Access", "Federated Token Id", "Federated Token Issuer", "Token issuer type", "Token issuer name", "Associated Resource Id", "Flagged for review"],
+        "Sign ins with anonymous IPs": ["User agent", "User ID", "User type", "Incoming token type", "Incoming token type.1", "Token issuer type", "Federated Token Id", "Federated Token Issuer"],
+        "Foreign country alerts": ["Correlation ID", "User agent", "User type", "Cross tenant access type", "Incoming token type", "Flagged for review", "Token issuer type", "Token issuer name", "Incoming token type.1", "Latency", "Conditional Access", "Managed Identity type", "Associated Resource Id", "Federated Token Id", "Federated Token Issuer"],
+        "Unusual logins": ["Date (UTC)", "User agent", "User ID", "User", "Username", "User type", "Cross tenant access type", "Incoming token type", "Flagged for review", "Token issuer type", "Latency", "Conditional Access", "Managed Identity type"]
+    }
 
-    # Implement anomaly detection logic based on the provided rules
-    # Example: Forwarding Email to another account
-    if 'RecordType' in df.columns and 'Operation' in df.columns and 'Parameter' in df.columns:
-        forwarding_emails = df[(df['RecordType'] == 1) & 
-                               (df['Operation'] == 'Set-Mailbox') & 
-                               (df['Parameter'].str.contains('ForwardingSmtpAddress', na=False))]
-        if not forwarding_emails.empty:
-            anomalies.append("Forwarding Email to another account detected")
+    # Check if any query type keyword is in the query
+    query_type = next((qt for qt in query_types if qt.lower() in query.lower()), None)
 
-    # Implement other anomaly detection rules here...
-
-    return anomalies
-
-def chunk_dataframe(df, chunk_size=100):
-    return [df[i:i+chunk_size] for i in range(0, len(df), chunk_size)]
-
-def get_most_relevant_chunks(query, chunks, top_n=5):
-    # Convert chunks to strings
-    chunk_texts = [chunk.to_string() for chunk in chunks]
-    
-    # Create TF-IDF vectorizer
-    vectorizer = TfidfVectorizer()
-    
-    # Fit and transform chunk texts
-    chunk_vectors = vectorizer.fit_transform(chunk_texts)
-    
-    # Transform query
-    query_vector = vectorizer.transform([query])
-    
-    # Calculate cosine similarities
-    similarities = cosine_similarity(query_vector, chunk_vectors)
-    
-    # Get indices of top N similar chunks
-    top_indices = similarities.argsort()[0][-top_n:][::-1]
-    
-    return [chunks[i] for i in top_indices]
-
-def summarize_dataframe(df):
-    summary = []
-    for column in df.columns:
-        column_type = str(df[column].dtype)
-        unique_values = df[column].nunique()
-        summary.append(f"Column '{column}' (Type: {column_type}):")
-        summary.append(f"  - Unique values: {unique_values}")
-        if pd.api.types.is_numeric_dtype(df[column]):
-            summary.append(f"  - Mean: {df[column].mean():.2f}")
-            summary.append(f"  - Median: {df[column].median():.2f}")
-            summary.append(f"  - Min: {df[column].min()}")
-            summary.append(f"  - Max: {df[column].max()}")
-        elif pd.api.types.is_string_dtype(df[column]):
-            summary.append(f"  - Most common value: {df[column].mode().iloc[0]}")
-    return "\n".join(summary)
-
-def ask_openai(question, context, df_summary):
-    if not client:
-        st.error("OpenAI API key is not set. Please enter your API key.")
-        return None
-    
-    try:
-        max_context_length = 3000  # Adjust as needed
-        truncated_context = context[:max_context_length]
-        
-        system_message = """
-You are an AI assistant specialized in analyzing JSON data that was converted from a CSV file. Your task is to thoroughly analyze the content, generate summaries, and provide comprehensive response based on user queries. give the response which is only related to the query.
-
-When analyzing data or answering questions, follow these below steps and give the respopnse by searching whole document. donot provid4e generic answers. the response are only from the document.:
-
-1. Clearly define the user's question.
-2. Analyse the whole document and get overview of the data as relevant to the query. 
-3. Summarize key points, patterns, statistics, and any significant trends, with explanations where necessary.
-5. if necessary, Provide suggestions on further analysis.
-6. Present responses in a clear, accessible tone. Use professional language but avoid unnecessary complexity unless required by the context.
-
-Where helpful, use bullet points or numbered lists for clarity. If data insights are requested, present them in tables or statistical summaries. Aim for precision and clarity to ensure the report is easy to follow while being informative.
-
-Your responses should be well-structured, and each report should be tailored to the specific query while leveraging the entire dataset for the analysis.
-"""
-
+    if query_type:
+        relevant_columns = query_types[query_type]
+    else:
+        # Use GPT to determine relevant columns
+        messages = [
+            {"role": "system", "content": f"You are a data analyst. Analyze the following query and determine which columns from the dataset are relevant. The available columns are: {', '.join(df.columns)}. Respond with only the column names, separated by commas."},
+            {"role": "user", "content": query}
+        ]
         
         response = client.chat.completions.create(
-            model="gpt-4o-mini",  # Make sure to use an appropriate model
-            messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": f"DataFrame summary:\n{df_summary}\n\nRelevant context:\n{truncated_context}\n\nQuestion: {question}"}
-            ]
+            model="gpt-4o-mini",
+            messages=messages,
+            max_tokens=16384,
+            temperature=0.1
         )
-        return response.choices[0].message.content
-    except Exception as e:
-        st.error(f"An error occurred while querying OpenAI: {str(e)}")
-        return None
+        
+        relevant_columns = [col.strip() for col in response.choices[0].message.content.split(',')]
+    
+    return [col for col in relevant_columns if col in df.columns], query_type
 
-st.title("CSV Analyzer")
+def get_ai_response(prompt, data_description, relevant_data, query_type, df):
+    # Prepare a sample of the entire dataset (first 100 rows)
+    full_data_sample = df.head(1000).to_string()
 
-uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+    messages = [
+        {"role": "system", "content": f"""You are an advanced AI assistant specialized in analyzing security log data. Your task is to provide comprehensive and accurate responses to queries about the security logs. Follow these instructions:
 
-if uploaded_file is not None:
-    try:
-        # Read a small sample of the file to check for issues
-        sample = uploaded_file.read(1024)
-        if not sample:
-            st.error("The uploaded file is empty.")
-        else:
-            # Reset file pointer to the beginning
-            uploaded_file.seek(0)
+1. Thoroughly analyze the entire dataset to find all relevant information.
+2. Provide responses based on related columns, rows, and contents from across the whole document.
+3. Ensure no relevant content is missed in your response.
+4. If the answer requires information from multiple parts of the document, combine and synthesize this information.
+5. If you need more specific data or information about certain rows that are not in the provided sample, please mention this in your response.
+6. Donot give the irrelavant or fake response.
+
+Here's a sample of the dataset (first 1000 rows):
+{full_data_sample}
+
+The full set of columns available in the dataset are: {', '.join(df.columns)}
+
+Remember, your goal is to provide the most comprehensive and accurate response possible based on the entire security log dataset."""},
+        {"role": "user", "content": prompt}
+    ]
+    
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        max_tokens=16384,
+        temperature=0.1
+    )
+    
+    return response.choices[0].message.content
+
+def main():
+    st.title("Advanced Security Log Analysis Chatbot")
+    
+    if not client.api_key:
+        st.error("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
+        return
+
+    uploaded_file = st.file_uploader("Choose a CSV or Excel file", type=["csv", "xlsx", "xls"])
+    
+    if uploaded_file is not None:
+        df = load_data(uploaded_file)
+        
+        if df is not None:
+            st.write("Data Preview:")
+            st.dataframe(df.head())
             
-            df = pd.read_csv(uploaded_file)
-            if df.empty:
-                st.error("The uploaded file contains no data.")
-            else:
-                st.write("Data Preview:")
-                st.write(df.head())
+            data_description = f"Number of rows: {len(df)}\n"
+            data_description += f"Data types: {df.dtypes.to_string()}"
+            
+            user_question = st.text_input("Ask a question about the security logs:")
+            
+            if user_question:
+                with st.spinner("Analyzing query..."):
+                    relevant_columns, query_type = analyze_query(user_question, df)
+                
+                if query_type:
+                    st.write("Identified Query Type:", query_type)
+                st.write("Initially Relevant columns:", relevant_columns)
+                
+                if relevant_columns:
+                    relevant_data = df[relevant_columns].to_string()
+                else:
+                    relevant_data = "No specific columns identified as initially relevant."
+                
+                with st.spinner("Generating comprehensive response..."):
+                    ai_response = get_ai_response(user_question, data_description, relevant_data, query_type, df)
+                
+                st.write("AI Response:")
+                st.write(ai_response)
 
-                json_data = df.to_json(orient="records")
-                st.download_button(
-                    label="Download JSON",
-                    data=json_data,
-                    file_name="converted_data.json",
-                    mime="application/json"
-                )
-
-                anomalies = analyze_anomalies(df)
-                if anomalies:
-                    st.subheader("Anomalies Detected:")
-                    for anomaly in anomalies:
-                        st.write(f"- {anomaly}")
-
-                # Chunk the dataframe
-                chunks = chunk_dataframe(df)
-
-                # Create a summary of the dataframe
-                df_summary = summarize_dataframe(df)
-
-                st.subheader("Analyze your data:")
-                user_question = st.text_input("Ask a question about the uploaded file:")
-                if user_question:
-                    relevant_chunks = get_most_relevant_chunks(user_question, chunks)
-                    context = "\n".join([chunk.to_string() for chunk in relevant_chunks])
-                    answer = ask_openai(user_question, context, df_summary)
-                    if answer:
-                        st.markdown("### AI Analysis Report:")
-                        st.markdown(answer)
-                        
-                        with st.expander("View relevant data"):
-                            for i, chunk in enumerate(relevant_chunks, 1):
-                                st.write(f"Data Subset {i}:")
-                                st.write(chunk)
-
-    except pd.errors.EmptyDataError:
-        st.error("The uploaded file is empty or contains no parsable data.")
-    except Exception as e:
-        st.error(f"An error occurred while processing the file: {str(e)}")
+if __name__ == "__main__":
+    main()
