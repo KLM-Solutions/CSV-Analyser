@@ -65,7 +65,7 @@ def analyze_query(query, df):
 
 def get_ai_response(prompt, data_description, relevant_data, query_type, df):
     # Prepare a sample of the entire dataset (first 100 rows)
-    full_data_sample = df.head(1000).to_string()
+    full_data_sample = df.head(100).to_string()
 
     messages = [
         {"role": "system", "content": f"""You are an advanced AI assistant specialized in analyzing security log data. Your task is to provide comprehensive and accurate responses to queries about the security logs. Follow these instructions:
@@ -77,7 +77,7 @@ def get_ai_response(prompt, data_description, relevant_data, query_type, df):
 5. If you need more specific data or information about certain rows that are not in the provided sample, please mention this in your response.
 6. Donot give the irrelavant or fake response.
 
-Here's a sample of the dataset (first 1000 rows):
+Here's a sample of the dataset (first 100 rows):
 {full_data_sample}
 
 The full set of columns available in the dataset are: {', '.join(df.columns)}
