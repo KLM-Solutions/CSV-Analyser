@@ -1,5 +1,4 @@
 streamlit
 pandas
 openai
-python-dotenv
-scikit-learn
+openpyxl
