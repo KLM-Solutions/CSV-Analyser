@@ -76,7 +76,7 @@ def get_ai_response(prompt, data_description, relevant_data, query_type, df):
 4. If the answer requires information from multiple parts of the document, combine and synthesize this information.
 5. If you need more specific data or information about certain rows that are not in the provided sample, please mention this in your response.
 6. Donot give the irrelavant or fake response.
-
+7. give the response as report.
 Here's a sample of the dataset (first 100 rows):
 {full_data_sample}
 
