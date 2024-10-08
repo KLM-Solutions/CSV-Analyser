@@ -1,11 +1,18 @@
 import streamlit as st
 import pandas as pd
-from openai import OpenAI
+from langchain.chat_models import ChatOpenAI
+from langchain.schema import HumanMessage, SystemMessage
 import os
 import re
 
-# Set up OpenAI client
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_API_KEY"] = st.secrets["LANGSMITH_API_KEY"]
+os.environ["LANGCHAIN_ENDPOINT"] = "https://api.smith.langchain.com"
+os.environ["LANGCHAIN_PROJECT"] = "csv-analyser"
+
+
+# Add this line:
+chat_model = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.1)
 
 def load_data(file):
     if file.name.endswith('.csv'):
@@ -46,20 +53,15 @@ def analyze_query(query, df, column_instruction):
     if query_type:
         relevant_columns = query_types[query_type]
     else:
-        # Use GPT to determine relevant columns
+        # Use Langchain to determine relevant columns
         messages = [
-            {"role": "system", "content": column_instruction.format(columns=', '.join(df.columns))},
-            {"role": "user", "content": query}
+            SystemMessage(content=column_instruction.format(columns=', '.join(df.columns))),
+            HumanMessage(content=query)
         ]
         
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            max_tokens=16384,
-            temperature=0.1
-        )
+        response = chat_model(messages)
         
-        relevant_columns = [col.strip() for col in response.choices[0].message.content.split(',')]
+        relevant_columns = [col.strip() for col in response.content.split(',')]
     
     return [col for col in relevant_columns if col in df.columns], query_type
 
@@ -68,23 +70,18 @@ def get_ai_response(prompt, data_description, relevant_data, query_type, df, res
     full_data_sample = df.head(100).to_string()
 
     messages = [
-        {"role": "system", "content": response_instruction.format(full_data_sample=full_data_sample, columns=', '.join(df.columns))},
-        {"role": "user", "content": prompt}
+        SystemMessage(content=response_instruction.format(full_data_sample=full_data_sample, columns=', '.join(df.columns))),
+        HumanMessage(content=prompt)
     ]
     
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        max_tokens=16384,
-        temperature=0.1
-    )
+    response = chat_model(messages)
     
-    return response.choices[0].message.content
+    return response.content
 
 def main():
-    st.title("Log Analysis Chatbot")
+    st.title("Advanced Security Log Analysis Chatbot")
     
-    if not client.api_key:
+    if not st.secrets["OPENAI_API_KEY"]:
         st.error("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
         return
 
