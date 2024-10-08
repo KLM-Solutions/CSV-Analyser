@@ -17,7 +17,7 @@ def load_data(file):
         return None
     return df
 
-def analyze_query(query, df):
+def analyze_query(query, df, column_instruction):
     query_types = {
         "Forwarding Email": ["User agent", "Request ID", "User type", "Cross tenant access type"],
         "Suspicious User Password Change": ["Date (UTC)", "Request ID", "Correlation ID", "User ID", "User", "Username", "User type", "Cross tenant access type", "Incoming token type", "Flagged for review", "Token issuer type", "Conditional Access", "Federated Token Id", "Federated Token Issuer"],
@@ -48,7 +48,7 @@ def analyze_query(query, df):
     else:
         # Use GPT to determine relevant columns
         messages = [
-            {"role": "system", "content": f"You are a data analyst. Analyze the following query and determine which columns from the dataset are relevant. The available columns are: {', '.join(df.columns)}. Respond with only the column names, separated by commas."},
+            {"role": "system", "content": column_instruction.format(columns=', '.join(df.columns))},
             {"role": "user", "content": query}
         ]
         
@@ -63,26 +63,12 @@ def analyze_query(query, df):
     
     return [col for col in relevant_columns if col in df.columns], query_type
 
-def get_ai_response(prompt, data_description, relevant_data, query_type, df):
+def get_ai_response(prompt, data_description, relevant_data, query_type, df, response_instruction):
     # Prepare a sample of the entire dataset (first 100 rows)
     full_data_sample = df.head(100).to_string()
 
     messages = [
-        {"role": "system", "content": f"""You are an advanced AI assistant specialized in analyzing security log data. Your task is to provide comprehensive and accurate responses to queries about the security logs. Follow these instructions:
-
-1. Thoroughly analyze the entire dataset to find all relevant information.
-2. Provide responses based on related columns, rows, and contents from across the whole document.
-3. Ensure no relevant content is missed in your response.
-4. If the answer requires information from multiple parts of the document, combine and synthesize this information.
-5. If you need more specific data or information about certain rows that are not in the provided sample, please mention this in your response.
-6. Donot give the irrelavant or fake response.
-7. give the response as report.
-Here's a sample of the dataset (first 100 rows):
-{full_data_sample}
-
-The full set of columns available in the dataset are: {', '.join(df.columns)}
-
-Remember, your goal is to provide the most comprehensive and accurate response possible based on the entire security log dataset."""},
+        {"role": "system", "content": response_instruction.format(full_data_sample=full_data_sample, columns=', '.join(df.columns))},
         {"role": "user", "content": prompt}
     ]
     
@@ -102,6 +88,63 @@ def main():
         st.error("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
         return
 
+    # Default column instructions
+    default_column_instruction = """You are a data analyst. Analyze the following query and determine which columns from the dataset are relevant. The available columns are: {columns}. Respond with only the column names, separated by commas."""
+
+    # Default response instructions
+    default_response_instruction = """You are an advanced AI assistant specialized in analyzing security log data. Your task is to provide comprehensive and accurate responses to queries about the security logs. Follow these instructions:
+
+1. Thoroughly analyze the entire dataset to find all relevant information.
+2. Provide responses based on related columns, rows, and contents from across the whole document.
+3. Ensure no relevant content is missed in your response.
+4. If the answer requires information from multiple parts of the document, combine and synthesize this information.
+5. If you need more specific data or information about certain rows that are not in the provided sample, please mention this in your response.
+6. Do not give irrelevant or fake responses.
+7. Give the response as a report.
+
+Here's a sample of the dataset (first 100 rows):
+{{full_data_sample}}
+
+The full set of columns available in the dataset are: {{columns}}
+
+Remember, your goal is to provide the most comprehensive and accurate response possible based on the entire security log dataset."""
+
+    # Use session state to store instructions
+    if 'column_instruction' not in st.session_state:
+        st.session_state.column_instruction = default_column_instruction
+    if 'response_instruction' not in st.session_state:
+        st.session_state.response_instruction = default_response_instruction
+    if 'temp_column_instruction' not in st.session_state:
+        st.session_state.temp_column_instruction = st.session_state.column_instruction
+    if 'temp_response_instruction' not in st.session_state:
+        st.session_state.temp_response_instruction = st.session_state.response_instruction
+
+    # Create checkboxes to select which instructions to edit
+    col1, col2 = st.columns(2)
+    edit_column_instructions = col1.checkbox("Edit Column Instructions")
+    edit_response_instructions = col2.checkbox("Edit Response Instructions")
+
+    # Create text areas for editing instructions
+    if edit_column_instructions:
+        st.session_state.temp_column_instruction = st.text_area(
+            "Edit Column Instructions", 
+            value=st.session_state.temp_column_instruction, 
+            height=200
+        )
+        if st.button("Save Column Instructions"):
+            st.session_state.column_instruction = st.session_state.temp_column_instruction
+            st.success("Column Instructions saved successfully!")
+
+    if edit_response_instructions:
+        st.session_state.temp_response_instruction = st.text_area(
+            "Edit Response Instructions", 
+            value=st.session_state.temp_response_instruction, 
+            height=300
+        )
+        if st.button("Save Response Instructions"):
+            st.session_state.response_instruction = st.session_state.temp_response_instruction
+            st.success("Response Instructions saved successfully!")
+
     uploaded_file = st.file_uploader("Choose a CSV or Excel file", type=["csv", "xlsx", "xls"])
     
     if uploaded_file is not None:
@@ -118,7 +161,7 @@ def main():
             
             if user_question:
                 with st.spinner("Analyzing query..."):
-                    relevant_columns, query_type = analyze_query(user_question, df)
+                    relevant_columns, query_type = analyze_query(user_question, df, st.session_state.column_instruction)
                 
                 if query_type:
                     st.write("Identified Query Type:", query_type)
@@ -130,7 +173,7 @@ def main():
                     relevant_data = "No specific columns identified as initially relevant."
                 
                 with st.spinner("Generating comprehensive response..."):
-                    ai_response = get_ai_response(user_question, data_description, relevant_data, query_type, df)
+                    ai_response = get_ai_response(user_question, data_description, relevant_data, query_type, df, st.session_state.response_instruction)
                 
                 st.write("AI Response:")
                 st.write(ai_response)
