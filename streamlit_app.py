@@ -5,7 +5,7 @@ import os
 import re
 
 # Set up OpenAI client
-client = OpenAI(api_key=st.secrets("OPENAI_API_KEY"))
+client = OpenAI(api_key=st.Secrets("OPENAI_API_KEY"))
 
 def load_data(file):
     if file.name.endswith('.csv'):
