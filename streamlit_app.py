@@ -79,7 +79,7 @@ def get_ai_response(prompt, data_description, relevant_data, query_type, df, res
     return response.content
 
 def main():
-    st.title("Advanced Security Log Analysis Chatbot")
+    st.title("Log Analysis Chatbot")
     
     if not st.secrets["OPENAI_API_KEY"]:
         st.error("OpenAI API key not found. Please set the OPENAI_API_KEY environment variable.")
